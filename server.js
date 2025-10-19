@@ -76,6 +76,3 @@ app.post('/', (req, res) => {
 // ---------- start ----------
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => console.log(`Live on ${PORT} | branch ${BRANCH}`));
-// ---------- start ----------
-const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => console.log(`Live on ${PORT} | branch ${BRANCH}`));
