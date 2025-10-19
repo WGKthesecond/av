@@ -1,12 +1,14 @@
 {
   "name": "dealer-stock",
   "version": "1.0.0",
-  "description": "persistent stock api",
+  "description": "persistent stock api with git push",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
   },
   "dependencies": {
-    "express": "^4.19.2"
-  }
+    "express": "^4.19.2",
+    "simple-git": "^3.24.0"
+  },
+  "license": "MIT"
 }
