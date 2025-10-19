@@ -1,0 +1,12 @@
+{
+  "name": "dealer-stock",
+  "version": "1.0.0",
+  "description": "persistent stock api",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  }
+}
