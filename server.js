@@ -30,10 +30,18 @@ async function gitSetup() {
 }
 async function commitAndPush() {
   if (!GITHUB_TOKEN || !GITHUB_REPO) return;
+  const remote = `https://${GITHUB_TOKEN}@github.com/${GITHUB_REPO}.git`;
   try {
+    // make sure the branch exists locally
+    const branches = await git.branchLocal();
+    if (!branches.all.includes(BRANCH)) {
+      await git.checkoutLocalBranch(BRANCH);   // create & switch
+    } else {
+      await git.checkout(BRANCH);
+    }
     await git.add('data.json');
     await git.commit('chore: update prices');
-    await git.push(`https://${GITHUB_TOKEN}@github.com/${GITHUB_REPO}.git`, BRANCH, ['--set-upstream']);
+    await git.push(remote, BRANCH, ['--set-upstream']);
   } catch (e) { console.error('Git push failed', e.message); }
 }
 
