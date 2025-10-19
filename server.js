@@ -23,11 +23,13 @@ function save() {
   fs.writeFileSync(DATAFile, JSON.stringify(stocks, null, 0));
 }
 async function gitSetup() {
-  // make sure we are on the correct branch
+  // give git an identity so commits work
+  await git.addConfig('user.name', 'render-bot');
+  await git.addConfig('user.email', 'render@example.com');
   await git.checkout(BRANCH).catch(() => {});
 }
 async function commitAndPush() {
-  if (!GITHUB_TOKEN || !GITHUB_REPO) return;        // silent if not configured
+  if (!GITHUB_TOKEN || !GITHUB_REPO) return;
   try {
     await git.add('data.json');
     await git.commit('chore: update prices');
@@ -71,6 +73,9 @@ app.post('/', (req, res) => {
   }
 });
 
+// ---------- start ----------
+const PORT = process.env.PORT || 10000;
+app.listen(PORT, () => console.log(`Live on ${PORT} | branch ${BRANCH}`));
 // ---------- start ----------
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => console.log(`Live on ${PORT} | branch ${BRANCH}`));
