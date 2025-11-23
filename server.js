@@ -1,31 +1,39 @@
-// server.js – stocks + GitHub-backed data branch + Discord report proxy
+// server.js – stocks + GitHub data branch + Discord report proxy
+
 const express   = require('express');
 const fs        = require('fs');
 const path      = require('path');
 const simpleGit = require('simple-git');
 const git       = simpleGit();
 
-const app  = express();
+const app = express();
 app.use(express.json());
 
-// ---------- env + config ----------
-const SECRET             = process.env.DEALER_KEY;
+// ========== ENV / CONFIG ==========
+const SECRET             = process.env.DEALER_KEY;          // must match Roblox SEC
 const DATAFile           = path.join(__dirname, 'data.json');
-const GITHUB_TOKEN       = process.env.GITHUB_TOKEN;      // personal access token
-const GITHUB_REPO        = process.env.GITHUB_REPO;       // e.g. "WGKthesecond/av"
-const BRANCH             = 'data/PUBLICAPI';              // data-only branch
-const REPORT_WEBHOOK_URL = process.env.REPORT_WEBHOOK_URL; // Discord webhook URL
+const GITHUB_TOKEN       = process.env.GITHUB_TOKEN;        // PAT with repo access
+const GITHUB_REPO        = process.env.GITHUB_REPO;         // e.g. "WGKthesecond/av"
+const BRANCH             = 'data/PUBLICAPI';                // data-only branch
+const REPORT_WEBHOOK_URL = process.env.REPORT_WEBHOOK_URL;  // Discord webhook URL
 
-// ---------- stocks structure ----------
-// stocks is an ARRAY:
-// [
-//   {
-//     name: "FOO",
-//     record: { MON: 0, TUES: 0, WED: 0, THURS: 0, FRI: 0, SAT: 0, SUN: 0 }
-//   },
-//   ...
-// ]
+// ========== STOCK DATA STRUCTURE ==========
+//
+// stocks is an ARRAY of:
+// {
+//   name: "AAPL",
+//   price: 100,
+//   record: { MON: 0, TUES: 0, WED: 0, THURS: 0, FRI: 0, SAT: 0, SUN: 0 }
+// }
+//
 let stocks = [];
+
+const DAY_KEYS = ['SUN', 'MON', 'TUES', 'WED', 'THURS', 'FRI', 'SAT'];
+
+function getTodayKey() {
+  const now = new Date();
+  return DAY_KEYS[now.getUTCDay()]; // UTC-weekday, 0 = SUN
+}
 
 function load() {
   try {
@@ -41,12 +49,24 @@ function save() {
   fs.writeFileSync(DATAFile, JSON.stringify(stocks, null, 0));
 }
 
-const DAY_KEYS = ['SUN', 'MON', 'TUES', 'WED', 'THURS', 'FRI', 'SAT'];
-
-function getTodayKey() {
-  const now = new Date();
-  const idx = now.getUTCDay(); // 0 = SUN ... 6 = SAT
-  return DAY_KEYS[idx];
+function ensureRecord(rec) {
+  // Make sure record has all 7 keys
+  const base = {
+    MON: 0,
+    TUES: 0,
+    WED: 0,
+    THURS: 0,
+    FRI: 0,
+    SAT: 0,
+    SUN: 0,
+  };
+  if (!rec || typeof rec !== 'object') return base;
+  for (const k of Object.keys(base)) {
+    if (typeof rec[k] !== 'number') {
+      rec[k] = 0;
+    }
+  }
+  return rec;
 }
 
 function ensureStock(name) {
@@ -54,6 +74,7 @@ function ensureStock(name) {
   if (!stock) {
     stock = {
       name,
+      price: 100,   // default price
       record: {
         MON: 0,
         TUES: 0,
@@ -65,20 +86,28 @@ function ensureStock(name) {
       }
     };
     stocks.push(stock);
+  } else {
+    if (typeof stock.price !== 'number') {
+      stock.price = 100;
+    }
+    stock.record = ensureRecord(stock.record);
   }
   return stock;
 }
 
-// ---------- git helpers ----------
+// ========== GIT HELPERS ==========
 async function gitSetup() {
   try {
     await git.addConfig('user.name', 'render-bot');
     await git.addConfig('user.email', 'render@example.com');
 
-    // Try to checkout the data branch; if it doesn't exist locally, create it
+    // Fetch in case the branch exists on remote only
+    await git.fetch().catch(() => {});
+
     try {
       await git.checkout(BRANCH);
     } catch {
+      // If local branch doesn't exist yet, create it
       await git.checkoutLocalBranch(BRANCH);
     }
   } catch (e) {
@@ -92,7 +121,6 @@ async function commitAndPush() {
   const remote = `https://${GITHUB_TOKEN}@github.com/${GITHUB_REPO}.git`;
 
   try {
-    // Ensure we're on the data branch
     const branches = await git.branchLocal();
     if (!branches.all.includes(BRANCH)) {
       await git.checkoutLocalBranch(BRANCH);
@@ -102,10 +130,10 @@ async function commitAndPush() {
 
     await git.add('data.json');
 
-    // Commit might fail if nothing changed; swallow that
     try {
       await git.commit('chore: update stock data');
     } catch (e) {
+      // Ignore "nothing to commit" errors
       if (!/nothing to commit/i.test(e.message || '')) {
         throw e;
       }
@@ -118,19 +146,20 @@ async function commitAndPush() {
   }
 }
 
-// ---------- init ----------
+// ========== INIT ==========
 load();
 gitSetup();
 
-// ---------- routes ----------
+// ========== ROUTES ==========
 
-// 1) Public read-only snapshot of all stocks
+// 1) Public read-only snapshot of all stocks (for debugging / external use)
 app.get('/stocks', (_req, res) => {
   res.json(stocks);
 });
 
-// 2) Trade endpoint: ["get" | "buy" | "sell", <STOCK>, <AMOUNT>?]
-//    Uses weekly record format per stock.
+// 2) Trade endpoint (root):
+//    Body: ["get" | "buy" | "sell", "<STOCKNAME>", "<AMOUNT>"]
+//    Header: x-dealer-key: <SECRET>
 app.post('/', (req, res) => {
   if (req.headers['x-dealer-key'] !== SECRET) {
     return res.status(403).json({ error: 'Bad key' });
@@ -143,35 +172,46 @@ app.post('/', (req, res) => {
     return res.status(400).json({ error: 'Missing stock name' });
   }
 
-  const stock   = ensureStock(name);
-  const dayKey  = getTodayKey();
-  const current = stock.record[dayKey] || 0;
+  const stock  = ensureStock(name);
+  const dayKey = getTodayKey();
+
+  if (typeof stock.record[dayKey] !== 'number') {
+    stock.record[dayKey] = 0;
+  }
 
   switch (action) {
     case 'get': {
-      // Just return the weekly curve
+      // Just return state as-is
       return res.json({
         name:   stock.name,
+        price:  stock.price,
         record: stock.record
       });
     }
 
     case 'buy': {
-      stock.record[dayKey] = current + amount;
+      stock.price = (typeof stock.price === 'number' ? stock.price : 100) + amount;
+      stock.record[dayKey] = stock.record[dayKey] + amount;
+
       save();
       commitAndPush();
       return res.json({
         name:   stock.name,
+        price:  stock.price,
         record: stock.record
       });
     }
 
     case 'sell': {
-      stock.record[dayKey] = Math.max(0, current - amount);
+      const basePrice = (typeof stock.price === 'number' ? stock.price : 100);
+      stock.price = Math.max(0.01, basePrice - amount);
+      stock.record[dayKey] = Math.max(0, stock.record[dayKey] - amount);
+
       save();
       commitAndPush();
       return res.json({
         name:   stock.name,
+        price:  stock.price,
         record: stock.record
       });
     }
@@ -229,6 +269,7 @@ app.post('/report', async (req, res) => {
       ]
     };
 
+    // Node 18+ has global fetch; your Render runtime (22.x) supports this
     const resp = await fetch(REPORT_WEBHOOK_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -248,8 +289,9 @@ app.post('/report', async (req, res) => {
   }
 });
 
-// ---------- start ----------
+// ========== START ==========
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
   console.log(`Live on ${PORT} | branch ${BRANCH}`);
 });
+
