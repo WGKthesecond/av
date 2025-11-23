@@ -4,15 +4,17 @@ const fs        = require('fs');
 const path      = require('path');
 const simpleGit = require('simple-git');
 const git       = simpleGit();
+const fetch     = require('node-fetch'); // <-- add this
 
 const app  = express();
 app.use(express.json());
 
-const SECRET       = process.env.DEALER_KEY;
-const DATAFile     = path.join(__dirname, 'data.json');
-const GITHUB_TOKEN = process.env.GITHUB_TOKEN;   // personal access token
-const GITHUB_REPO  = process.env.GITHUB_REPO;    // user/repo
-const BRANCH       = 'data/PUBLICAPI';
+const SECRET             = process.env.DEALER_KEY;
+const DATAFile           = path.join(__dirname, 'data.json');
+const GITHUB_TOKEN       = process.env.GITHUB_TOKEN;      // personal access token
+const GITHUB_REPO        = process.env.GITHUB_REPO;       // user/repo
+const BRANCH             = 'data/PUBLICAPI';
+const REPORT_WEBHOOK_URL = process.env.REPORT_WEBHOOK_URL; // <-- Discord webhook (env)
 
 // ---------- helpers ----------
 let stocks = {};
@@ -81,6 +83,75 @@ app.post('/', (req, res) => {
   }
 });
 
+// 3. report → Discord webhook
+app.post('/report', async (req, res) => {
+  try {
+    if (!REPORT_WEBHOOK_URL) {
+      console.error('No REPORT_WEBHOOK_URL configured');
+      return res.status(500).json({ error: 'Webhook not configured' });
+    }
+
+    const {
+      clientName,
+      reportedPlayerName,
+      reason,
+      am,
+      serverId
+    } = req.body || {};
+
+    if (!clientName || !reportedPlayerName) {
+      return res.status(400).json({ error: 'Missing clientName or reportedPlayerName' });
+    }
+
+    const safeReason  = (reason && String(reason).trim()) || 'No reason provided';
+    const safeServer  = (serverId && String(serverId)) || 'Unknown';
+
+    // build fields like in your Roblox code
+    const fields = [
+      { name: 'Reason',      value: safeReason,  inline: true },
+      { name: 'Reported By', value: String(clientName), inline: true },
+      { name: 'Server ID',   value: safeServer,  inline: true },
+    ];
+
+    if (am === true) {
+      fields.push({
+        name: 'Other',
+        value: 'Auto mod can make mistakes.',
+        inline: true
+      });
+    }
+
+    const payload = {
+      content: 'Player Report Received: <@&1429477002435629127>',
+      embeds: [
+        {
+          title: `Player Reported: ${reportedPlayerName}`,
+          color: 16529667,
+          fields
+        }
+      ]
+    };
+
+    const resp = await fetch(REPORT_WEBHOOK_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => '');
+      console.error('Discord webhook failed:', resp.status, text);
+      return res.status(500).json({ error: 'Discord webhook failed', status: resp.status });
+    }
+
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('Error in /report:', err.message || err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 // ---------- start ----------
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => console.log(`Live on ${PORT} | branch ${BRANCH}`));
+
